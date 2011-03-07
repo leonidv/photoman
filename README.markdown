@@ -31,7 +31,7 @@ You have to install groovy and metacam in your system:
 
     sudo apt-get install groovy metacam
 
-For ordering files just run photoman in directory this your images:
+For ordering files just run photoman in directory with your images:
 
     groovy photoman.groovy
 
