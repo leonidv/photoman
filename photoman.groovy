@@ -17,24 +17,36 @@ limitations under the License.
 import groovy.io.FileType
 import org.apache.ivy.util.FileUtil
 
+class CreationDate {
+    String date = "";
+    String time = "";
+    def String toString() { "date = ${date}, time = ${time}" }
+}
+
 /**
  * Return date from file exif. It's using metacam package.
  *
  * @param fileName of image
  * @return exif creation date
  */
-def String getExifDate(String fileName) {
-  def input = "metacam ${fileName}".execute().inputStream
-  String date = null;
+def CreationDate getExifDate(String fileName) {
+  def result = new CreationDate()
+
+  def input = "exiftool -CreateDate ${fileName}".execute().inputStream
+
   input.eachLine {line ->
-    def m = (line =~ /\s+Image Capture Date:\s.*(\d{4}:\d{2}:\d{2}).*/)
+    def m = (line =~ /^Create Date\s+: (\d{4}:\d{2}:\d{2}) (\d{2}:\d{2}:\d{2})$/)
     if (m.matches()) {
-      date = m[0][1]
-      date = date.replace(':', "-")
+      def date = m[0][1]
+      def time = m[0][2]
+      result.date = date.replace(':', "-")
+      result.time = time.replace(":", "_")
     }
+
   }
-  return date
+  return result
 }
+
 
 /**
  * Return date that is extracted from file path.
@@ -43,51 +55,70 @@ def String getExifDate(String fileName) {
  * @return
  */
 def String getPathDate(File file) {
-  if (file.parent == null) {
+  if (file == null) {
     return "";
   }
 
-  def parent = file.parentFile
-  if (parent.name ==~ /\d{4}-\d{2}-\d{2}/) {
-    return parent.name;
+  def matcher = (file.name =~ /^(\d{4}-\d{2}-\d{2}).*/ )
+  if (matcher.matches()) {
+    return matcher[0][1]; // first match, first group
   } else {
-    return getPathDate(parent)
+    return getPathDate(file.parentFile)
   }
 }
 
 assert getPathDate(new File("/opt/eclipse/eclipse")) == ""
 assert getPathDate(new File("photo/2011/2011-01-01/image.jpg")) == "2011-01-01"
 assert getPathDate(new File("photo/2011-01-01/pef/old/image.jpg")) == "2011-01-01"
+assert getPathDate(new File("photo/2011/2011-02-03 Rome Holidays/image.jpg")) == "2011-02-03"
+assert getPathDate(new File("photo/2011-02-03 vacation in Russia/pef/old/image.jpg")) == "2011-02-03"
+assert getPathDate(new File("./2015-01-31").absoluteFile) == "2015-01-31"
+
 
 /**
- * Move images to folder with name builded on creation date information.
+ * Move images to folder with name built on creation date information.
  *
  */
-def void cleanByDate() {
+def void seperateByDate(boolean skipWithDate) {
   Set<File> possibleEmptyDirs = new HashSet<File>();
-  new File(".").eachFileRecurse(FileType.FILES) { file ->
 
-    if (file.name ==~ /(?i)IMGP\d+\.((JPG)|(PEF))$/) {
-      def creationDate = getExifDate(file.absolutePath);
-      def pathDate = getPathDate(file.absoluteFile)
-
-      if (creationDate == pathDate) {
-        return
+  new File(".").eachFile(FileType.DIRECTORIES) { dir ->
+      def pathDate = getPathDate(dir.absoluteFile)
+      if (!pathDate.isEmpty() && skipWithDate) {
+          return
       }
+      dir.eachFileRecurse(FileType.FILES) { file ->
+          def matcher = (file.name =~ /(?i)IMGP\d+\.(JPG|PEF|MOV)$/)
+          if (matcher.matches()) {
+              String fileExtension = matcher[0][1]
+              try {
+                  def creationDate = getExifDate(file.absolutePath)
+                  if (creationDate.date == pathDate) {
+                      return
+                  }
 
-      def File dateFolder = new File(creationDate);
-      if (!dateFolder.isDirectory()) {
-        dateFolder.mkdirs();
+                  def File dateFolder = new File(creationDate.date)
+                  if (!dateFolder.isDirectory()) {
+                      dateFolder.mkdirs();
+                  }
+
+                  def File dest;
+                  if (fileExtension.toLowerCase() == "mov") {
+                      dest = new File(dateFolder, creationDate.date + " " + creationDate.time + "." + fileExtension)
+                  } else {
+                      dest = new File(dateFolder, file.name)
+                  }
+
+                  println("move: ${file} → ${dest}")
+                  file.renameTo(dest)
+                  possibleEmptyDirs << file.parentFile
+              } catch (Exception ex) {
+                  ex.printStackTrace(System.err)
+                  println(ex.message)
+              };
+          }
+
       }
-
-      def File dest = new File(dateFolder, file.name);
-      println("move: ${file} → ${dest}")
-      FileUtil.copy(file, dest, null)
-      file.delete();
-
-      possibleEmptyDirs << file.parentFile;
-    }
-
   }
   println(possibleEmptyDirs)
   possibleEmptyDirs.each { File dir ->
@@ -97,10 +128,16 @@ def void cleanByDate() {
   }
 }
 
+boolean isRaw(File file) { return (file ==~ /(?i).*(PEF)$/) }
+
+String baseName(File file) { file.name.split("\\.")[-2] }
+
+boolean rawInRightPlace(File file) {file.parentFile.name == "raw"}
+
 def void separateRaws() {
   new File(".").eachFileRecurse(FileType.FILES) { file ->
-    boolean isPEF = (file ==~ /(?i).*(PEF)$/);
-    boolean isInRightPlace = (file.parentFile.name == "raw")
+    boolean isPEF = isRaw(file);
+    boolean isInRightPlace = rawInRightPlace(file)
 
     if (isPEF && !isInRightPlace) {
       File rawFolder = new File(file.parent,"raw")
@@ -115,8 +152,26 @@ def void separateRaws() {
   }
 }
 
+/**
+ * Remove RAW files that don't has couple of JPG.
+ */
+def void cleanRaw() {
+ new File(".").eachFileRecurse(FileType.FILES) { file ->
+   if (isRaw(file) && rawInRightPlace(file)) {
+     String baseName = baseName(file)
+     File jpegFile = new File(baseName+".JPG",file.parentFile.parentFile)
+     if (!jpegFile.isFile()) {
+       println("Remove "+file.absoluteFile.canonicalPath)
+       file.delete()
+     }
+   }
+ }
+}
 
-
-/** ********************* Entry point. Script execution start here     ******************************/
-cleanByDate()
-separateRaws()
+/** ********************* Entry point. Script execution start here     ***************************** */
+if (args.contains("clean")) {
+  cleanRaw()
+} else {
+  seperateByDate(!args.contains("--all"))
+  separateRaws()
+}
