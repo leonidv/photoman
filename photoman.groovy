@@ -20,7 +20,12 @@ import org.apache.ivy.util.FileUtil
 class CreationDate {
     String date = "";
     String time = "";
-    def String toString() { "date = ${date}, time = ${time}" }
+
+    String toString() { "date = ${date}, time = ${time}" }
+
+    boolean isNotExists() {
+        return date.isBlank()
+    }
 }
 
 /**
@@ -29,7 +34,7 @@ class CreationDate {
  * @param fileName of image
  * @return exif creation date
  */
-def CreationDate getExifDate(String fileName) {
+CreationDate getExifDate(String fileName) {
   def result = new CreationDate()
 
   def input = "exiftool -CreateDate ${fileName}".execute().inputStream
@@ -42,7 +47,6 @@ def CreationDate getExifDate(String fileName) {
       result.date = date.replace(':', "-")
       result.time = time.replace(":", "_")
     }
-
   }
   return result
 }
@@ -54,7 +58,7 @@ def CreationDate getExifDate(String fileName) {
  * @param file
  * @return
  */
-def String getPathDate(File file) {
+String getPathDate(File file) {
   if (file == null) {
     return "";
   }
@@ -79,30 +83,35 @@ assert getPathDate(new File("./2015-01-31").absoluteFile) == "2015-01-31"
  * Move images to folder with name built on creation date information.
  *
  */
-def void seperateByDate(boolean skipWithDate) {
+void seperateByDate(boolean skipWithDate) {
   Set<File> possibleEmptyDirs = new HashSet<File>();
 
   new File(".").eachFile(FileType.DIRECTORIES) { dir ->
       def pathDate = getPathDate(dir.absoluteFile)
       if (!pathDate.isEmpty() && skipWithDate) {
+          println ("already with date ${dir.absolutePath}")
           return
       }
       dir.eachFileRecurse(FileType.FILES) { file ->
-          def matcher = (file.name =~ /(?i)IMGP\d+\.(JPG|PEF|MOV)$/)
+          def matcher = (file.name =~ /(?i).*?\d+\.(JPG|PEF|MOV|ARW)$/)
+          println(file.getAbsoluteFile())
           if (matcher.matches()) {
               String fileExtension = matcher[0][1]
               try {
                   def creationDate = getExifDate(file.absolutePath)
+                  println("${file.absolutePath} creationDate: ${creationDate}")
                   if (creationDate.date == pathDate) {
                       return
                   }
 
-                  def File dateFolder = new File(creationDate.date)
+
+                  File dateFolder = new File(creationDate.date)
+                  println "${file.absolutePath} creationDatedate: ${creationDate} folder: ${dateFolder} "
                   if (!dateFolder.isDirectory()) {
                       dateFolder.mkdirs();
                   }
 
-                  def File dest;
+                  File dest;
                   if (fileExtension.toLowerCase() == "mov") {
                       dest = new File(dateFolder, creationDate.date + " " + creationDate.time + "." + fileExtension)
                   } else {
@@ -120,7 +129,7 @@ def void seperateByDate(boolean skipWithDate) {
 
       }
   }
-  println(possibleEmptyDirs)
+
   possibleEmptyDirs.each { File dir ->
     if(dir.listFiles().length == 0) {
       dir.deleteDir();
@@ -128,13 +137,13 @@ def void seperateByDate(boolean skipWithDate) {
   }
 }
 
-boolean isRaw(File file) { return (file ==~ /(?i).*(PEF)$/) }
+boolean isRaw(File file) { return (file ==~ /(?i).*(PEF|ARW)$/) }
 
 String baseName(File file) { file.name.split("\\.")[-2] }
 
 boolean rawInRightPlace(File file) {file.parentFile.name == "raw"}
 
-def void separateRaws() {
+void separateRaws() {
   new File(".").eachFileRecurse(FileType.FILES) { file ->
     boolean isPEF = isRaw(file);
     boolean isInRightPlace = rawInRightPlace(file)
@@ -146,8 +155,7 @@ def void separateRaws() {
       }
       File dest = new File(rawFolder,file.name);
       println "move: ${file} → ${dest}"
-      FileUtil.copy(file,dest,null);
-      file.delete()
+      file.renameTo(dest)
     }
   }
 }
@@ -155,22 +163,32 @@ def void separateRaws() {
 /**
  * Remove RAW files that don't has couple of JPG.
  */
-def void cleanRaw() {
+void cleanRaw(boolean dryRun) {
  new File(".").eachFileRecurse(FileType.FILES) { file ->
    if (isRaw(file) && rawInRightPlace(file)) {
      String baseName = baseName(file)
      File jpegFile = new File(baseName+".JPG",file.parentFile.parentFile)
      if (!jpegFile.isFile()) {
-       println("Remove "+file.absoluteFile.canonicalPath)
-       file.delete()
+         println("Remove " + file.absoluteFile.canonicalPath)
+         if (!dryRun) {
+             file.delete()
+         }
      }
    }
  }
 }
 
 /** ********************* Entry point. Script execution start here     ***************************** */
+
+if (args.length == 0) {
+    println("clean: deleterRAW without related JPEG. Use --dry-run for testing. \n")
+    println("without arguments separates by date and raw")
+}
+
 if (args.contains("clean")) {
-  cleanRaw()
+    def dryRun = args.contains("--dry-run")
+    cleanRaw(dryRun)
+
 } else {
   seperateByDate(!args.contains("--all"))
   separateRaws()
